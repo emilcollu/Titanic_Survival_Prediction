@@ -6,9 +6,10 @@ import seaborn as sns
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.ensemble import RandomForestClassifier
 import xgboost as xgb
+import optuna
 from sklearn.metrics import accuracy_score, roc_auc_score, confusion_matrix, classification_report
 from sklearn.preprocessing import LabelEncoder, RobustScaler, MinMaxScaler
-from sklearn.model_selection import train_test_split,cross_validate, GridSearchCV
+from sklearn.model_selection import train_test_split,cross_validate, GridSearchCV, cross_val_score
 from sklearn.impute import KNNImputer
 from statsmodels.stats.proportion import proportions_ztest
 
@@ -251,6 +252,7 @@ custom_colors = {
     'maturefemale': 'hotpink',
     'seniorfemale': 'deeppink'
 }
+
 # Data Viz of Survival Rate with custom colors
 sns.barplot(data=df, x="NEW_SEX_AGE", y="SURVIVED", palette=custom_colors)
 plt.xlabel("Age_Gender Category")
@@ -635,3 +637,97 @@ submission.to_csv("submission.csv", index=False)
 #RandomForestClassifier model with an accuracy of 0.77033
 #XGBoost Classifier model with an accuracy of 0.76076
 
+#Feature Importance
+def plot_importance(model, features, num=len(X), save=False):
+    feature_imp = pd.DataFrame({'Value': model.feature_importances_, 'Feature': features.columns})
+    plt.figure(figsize=(10, 10))
+    sns.set(font_scale=1)
+    sns.barplot(x="Value", y="Feature", data=feature_imp.sort_values(by="Value",
+                                                                     ascending=False)[0:num])
+    plt.title('Features')
+    plt.tight_layout()
+    plt.show()
+    if save:
+        plt.savefig('importances.png')
+
+plot_importance(rf_model, X)
+
+#Bayesian Optimization
+import optuna
+from sklearn.ensemble import GradientBoostingRegressor
+from sklearn.model_selection import cross_val_score
+from sklearn.metrics import mean_squared_error
+import numpy as np
+
+
+# Define the objective function for optimization
+import optuna
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import cross_val_score
+import numpy as np
+
+# Define the objective function for Optuna
+def objective(trial):
+    # Suggest values for hyperparameters
+    n_estimators = trial.suggest_int("n_estimators", 100, 1000, step=100)
+    max_depth = trial.suggest_int("max_depth", 3, 30)
+    min_samples_split = trial.suggest_int("min_samples_split", 2, 20)
+    min_samples_leaf = trial.suggest_int("min_samples_leaf", 1, 10)
+    max_features = trial.suggest_categorical("max_features", ["sqrt", "log2", None])
+    bootstrap = trial.suggest_categorical("bootstrap", [True, False])
+
+    # Define model with suggested parameters
+    model = RandomForestClassifier(
+        n_estimators=n_estimators,
+        max_depth=max_depth,
+        min_samples_split=min_samples_split,
+        min_samples_leaf=min_samples_leaf,
+        max_features=max_features,
+        bootstrap=bootstrap,
+        random_state=42,
+        n_jobs=-1
+    )
+
+    # Perform cross-validation and return the negative accuracy score
+    score = cross_val_score(model, X_train, y_train, cv=5, scoring="accuracy", n_jobs=-1)
+
+    return score.mean()  # Maximize accuracy
+
+
+# Create a study object and optimize
+study = optuna.create_study(direction="maximize")  # We want to maximize accuracy
+study.optimize(objective, n_trials=50, show_progress_bar=True)
+
+# Get the best hyperparameters
+print("Best Hyperparameters:", study.best_params)
+
+# Train the final model using the best parameters
+rf_best_model = RandomForestClassifier(**study.best_params).fit(X_train, y_train)
+
+# Evaluate on test data
+y_pred = rf_best_model.predict(X_test)
+
+print(classification_report(y_test, y_pred))
+
+cv_results = cross_validate(rf_best_model, X_train, y_train, cv=5, scoring=["accuracy", "precision", "recall", "f1"])
+
+cv_results["test_accuracy"].mean()
+#Accuracy: 0.82
+cv_results["test_precision"].mean()
+#Precision: 0.79
+cv_results["test_recall"].mean()
+#Recall: 0.70
+cv_results["test_f1"].mean()
+#F1-score: 0.74
+
+#Testing results
+X_test_final = df_test.drop(["PASSENGERID"], axis=1)
+
+y_test_pred = rf_best_model.predict(X_test_final)
+
+submission = pd.DataFrame({
+    'PassengerId': df_test['PASSENGERID'],
+    'Survived': y_test_pred
+})
+
+submission.to_csv("submission_titanic.csv", index=False)
